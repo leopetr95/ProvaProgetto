@@ -133,7 +133,7 @@ char* listen_request(int sockfd,segmentPacket* p,struct sockaddr_in* addr,sockle
 /*Generates the list of file in server directory*/
 char* list_file_server(){
 
-	FILE* proc = popen("ls", "r");
+	FILE* proc = popen("ls ServerDirectory", "r");
 	if(proc == NULL){
 
 		perror("Error while popen\n");
@@ -416,7 +416,6 @@ void get_file_server(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 
   		printf("Printo quello che ho ricevuto %s\n", dataPacket.data);
 
-
   		memcpy(bufferToRecieve, &dataPacket, sizeof(segmentPacket));
 
 		seqNum = dataPacket.seq_no;
@@ -530,7 +529,7 @@ void get_file_server(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 }
 
 /*According to the recieved command the corresponding function is activated*/
-void manage_client(int sockfd,struct msgbuf msg){
+void manage_client(int sockfd, struct msgbuf msg){
 
 	printf("Sono dentro manage_client\n");
 
@@ -633,7 +632,7 @@ void child_job(int queue_id,int shared_id,pid_t pid){
 		}
 
 		/*Execute the request*/
-		manage_client(sockfd,msg);	
+		manage_client(sockfd, msg);	
 
 		sem_wait(sem);
 		available_proc++;
@@ -687,7 +686,6 @@ void write_on_queue(int queue_id,struct sockaddr_in s, segmentPacket p, char* re
 
 	}
 }
-
 
 int main(int argc, char **argv){
 
