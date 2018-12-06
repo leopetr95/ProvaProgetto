@@ -1,4 +1,3 @@
-#include "configurations.h"
 #include "basic.h"
 #include "data_types.h"
 #include "common.h"
@@ -126,9 +125,13 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 
 	printf("Sono dentro a send_file_server\n");
 
+	char directoryNameCat[256] = "Files_Client/";
+
 	char* filename = comm + 4;
 
-	int retCheck = check_existence(filename);
+	strcat(directoryNameCat, filename);
+
+	int retCheck = check_existence(directoryNameCat);
 	if(retCheck == 0){
 
 		error("File is not present in the directory of the client\n");
@@ -136,7 +139,7 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 	}
 
 	//opening file to send
-	int fd = open(filename, O_RDONLY);
+	int fd = open(directoryNameCat, O_RDONLY);
 	if(fd < 0){
 
 		error("Error while opening file\n");
@@ -145,7 +148,7 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 
 	/*acquiring stats of the file*/
 	struct stat st;
-	int count = stat(filename, &st);
+	int count = stat(directoryNameCat, &st);
 	if(count < 0){
 
 		error("Error while acquiring stats of file\n");
@@ -326,11 +329,22 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 
 }
 
-/*Recieve the file from the server*/
+/*Receive the file from the server*/
 void get_file_client(int sockfd, char* comm, struct sockaddr_in servaddr, float loss_rate){
 
+	time_t intps;
+	struct tm* tmi;
 
-	char *filename = "trasmesso.txt";
+	intps = time(NULL);
+	tmi = localtime(&intps);
+
+	char directoryNameCat[256] = "Files_Client/";
+
+	char filename[128];
+	sprintf(filename,"file.%d.%d.%d.%d.%d.%d.txt",tmi->tm_mday,tmi->tm_mon+1,1900+tmi->tm_year,tmi->tm_hour,tmi->tm_min,tmi->tm_sec);
+
+	strcat(directoryNameCat, filename);
+
 	//char *filename = comm+4;
 
   	/*check if the file is already in the client directory*/
@@ -373,15 +387,13 @@ void get_file_client(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 
 		if(!is_lost(loss_rate)){
 
-			printf("Qua ci arrivooooo\n");
-
     		if((dataPacket.seq_no == 0) && (dataPacket.type == 1)){
 
     			printf("Qua pure\n");
 
     			printf("Stampo quello che ho ricevuto\n%s\n", dataPacket.data);
 
-    			fd = open(filename, O_CREAT|O_WRONLY|O_TRUNC, 0666);
+    			fd = open(directoryNameCat, O_CREAT|O_WRONLY|O_TRUNC, 0666);
     			if(fd < 0){
 
     				error("Error while opening file\n");
@@ -405,7 +417,7 @@ void get_file_client(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 
     		}else if(dataPacket.seq_no == base + 1){
 
-    			fd = open(filename, O_WRONLY|O_APPEND, 0666);
+    			fd = open(directoryNameCat, O_WRONLY|O_APPEND, 0666);
     			if(fd < 0){
 
     				error("Error while opening file\n");
@@ -484,9 +496,9 @@ void get_file_client(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 
 }
 
-void recieve_list(int sockfd, struct sockaddr_in servaddr){
+void receive_list(int sockfd, struct sockaddr_in servaddr){
 
-	printf("Sono dentro recieve_list\n");
+	printf("Sono dentro receive_list\n");
 
 	char bufferList[8192];
 
@@ -512,20 +524,6 @@ int main(int argc, char *argv[]) {
 	segmentPacket p;
 	struct sigaction sa;
 	float loss; 
-
-
-	if(DIMWIN <= 0)
-		n_win = 80;
-	if(DIMWIN > 93)
-		n_win = 93;
-  	else
-	  	n_win = DIMWIN;
-
-
-  	if(ADAPTATIVE != 1)
-	  	adaptive = 0;
- 	else
-	  	adaptive = 1;
 
   	handle_sigchild(&sa);
 
@@ -626,7 +624,7 @@ int main(int argc, char *argv[]) {
 		  
 	  	}else if(strncmp(comm, "list", 4) == 0){
 
-	  		recieve_list(sockfd, servaddr);
+	  		receive_list(sockfd, servaddr);
 	  		break;
 
 	  	}else{

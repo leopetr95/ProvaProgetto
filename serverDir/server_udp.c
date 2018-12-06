@@ -1,5 +1,4 @@
 #include "basic.h"
-#include "configurations.h"
 #include "data_types.h"
 #include "common.h"
 
@@ -133,7 +132,7 @@ char* listen_request(int sockfd,segmentPacket* p,struct sockaddr_in* addr,sockle
 /*Generates the list of file in server directory*/
 char* list_file_server(){
 
-	FILE* proc = popen("ls ServerDirectory", "r");
+	FILE* proc = popen("ls Files_Server", "r");
 	if(proc == NULL){
 
 		perror("Error while popen\n");
@@ -163,8 +162,12 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
 	printf("Sono dentro a send_file_server\n");
 
+	char directoryNameCat[256] = "Files_Server/";
+
+	strcat(directoryNameCat, filename);
+
 	/*Check if the file to send is in the server directory*/
-	int retCheck = check_existence(filename);
+	int retCheck = check_existence(directoryNameCat);
 	if(retCheck == 0){
 
 		perror("Error while checking existence file\n");
@@ -173,7 +176,7 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 	}
 
 	/*opening file to send*/
-	int fd = open(filename, O_RDONLY);
+	int fd = open(directoryNameCat, O_RDONLY);
 	if(fd < 0){
 
 		perror("Error while opening file\n");
@@ -183,7 +186,7 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
 	/*acquiring stats of the file*/
 	struct stat st;
-	int count = stat(filename, &st);
+	int count = stat(directoryNameCat, &st);
 	if(count < 0){
 
 		perror("Error while acquiring stats of file\n");
@@ -376,7 +379,19 @@ void get_file_server(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 
 	printf("Sono dentro get_file_server\n");
 
-	char* filename = "trasferitoServer.txt";
+	time_t intps;
+	struct tm* tmi;
+
+	intps = time(NULL);
+	tmi = localtime(&intps);
+
+	char directoryNameCat[256] = "Files_Server/";
+
+	char filename[128]; 
+
+	sprintf(filename,"file.%d.%d.%d.%d.%d.%d.txt",tmi->tm_mday,tmi->tm_mon+1,1900+tmi->tm_year,tmi->tm_hour,tmi->tm_min,tmi->tm_sec);
+
+	strcat(directoryNameCat, filename);
 
 	//char *filename = comm+4;
 
@@ -416,6 +431,7 @@ void get_file_server(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 
   		printf("Printo quello che ho ricevuto %s\n", dataPacket.data);
 
+
   		memcpy(bufferToRecieve, &dataPacket, sizeof(segmentPacket));
 
 		seqNum = dataPacket.seq_no;
@@ -424,7 +440,7 @@ void get_file_server(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 
     		if(dataPacket.seq_no == 0 && dataPacket.type == 1){
 
-    			fd = open(filename, O_CREAT|O_WRONLY|O_TRUNC, 0666);
+    			fd = open(directoryNameCat, O_CREAT|O_WRONLY|O_TRUNC, 0666);
     			if(fd < 0){
 
     				perror("Error while opening file\n");
@@ -450,7 +466,7 @@ void get_file_server(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 
     		}else if(dataPacket.seq_no == base + 1){
 
-    			fd = open(filename, O_WRONLY|O_APPEND, 0666);
+    			fd = open(directoryNameCat, O_WRONLY|O_APPEND, 0666);
     			if(fd < 0){
 
     				perror("Error while opening file\n");
@@ -529,7 +545,7 @@ void get_file_server(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 }
 
 /*According to the recieved command the corresponding function is activated*/
-void manage_client(int sockfd, struct msgbuf msg){
+void manage_client(int sockfd,struct msgbuf msg){
 
 	printf("Sono dentro manage_client\n");
 
@@ -632,7 +648,7 @@ void child_job(int queue_id,int shared_id,pid_t pid){
 		}
 
 		/*Execute the request*/
-		manage_client(sockfd, msg);	
+		manage_client(sockfd,msg);	
 
 		sem_wait(sem);
 		available_proc++;
@@ -686,6 +702,7 @@ void write_on_queue(int queue_id,struct sockaddr_in s, segmentPacket p, char* re
 
 	}
 }
+
 
 int main(int argc, char **argv){
 
