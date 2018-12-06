@@ -9,7 +9,7 @@
 #include <semaphore.h>
 #include <pthread.h>
 
-#define CHUNCK 512
+#define CHUNCKSIZE 512
 
 
 
@@ -24,7 +24,7 @@ typedef struct segmentPacket{
 	int seq_no;
 	int ack_no;
 	int length;
-	char data[CHUNCK];
+	char data[CHUNCKSIZE];
 
 }segmentPacket;
 
@@ -45,10 +45,14 @@ typedef struct{
 
 
 struct msgbuf{
+
 	long mtype;
 	int client_seq;
 	struct sockaddr_in s;
-};
+	char command[256];
+	float loss;
+
+}msgbuf;
 
 
 typedef struct circ_buff{

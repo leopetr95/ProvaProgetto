@@ -2,61 +2,46 @@
 #include "basic.h"
 #include "data_types.h"
 #include "common.h"
-#include "thread_functions.h"
-#include "timer_functions.h"
-#include "packet_functions.h"
-#include "window_operations.h"
+
+#define BUFFER_SIZE 1200
+#define WINDOWSIZE 4
+#define TIMEOUT 3
 
 int n_request = 0;
 extern int n_win;
 int adaptive;
 
-void sighandler(int sign)
-{
+
+
+/*Sets up signal handler to avoid zombi processes*/
+void sighandler(int sign){
+
 	(void)sign;
 	int status;
 	pid_t pid;
 
 	--n_request;
 
-
 	while ((pid = waitpid(WAIT_ANY, &status, WNOHANG)) > 0)
 		;
 	return;
+
 }
 
-
-
-
-void handle_sigchild(struct sigaction* sa)
-{
+void handle_sigchild(struct sigaction* sa){
 
     sa->sa_handler = sighandler;
     sa->sa_flags = SA_RESTART;
     sigemptyset(&sa->sa_mask);
 
     if (sigaction(SIGCHLD, sa, NULL) == -1) {
+
         fprintf(stderr, "Error in sigaction()\n");
         exit(EXIT_FAILURE);
+
     }
+
 }
-
-
-
-
-
-int request_to_server(int sockfd,Header* x,struct sockaddr_in* addr)
-{
-
-
-    int n;
-    struct sockaddr_in s = *addr;
-	printf("Let me print the port to which I am sending %d\n", ntohs(s.sin_port));
-    struct timespec conn_time = {2,0};
-    int attempts = 0;
-    socklen_t len = sizeof(s);
-    x->n_seq = generate_casual();
-
 
     /******************************************************************
      * Process tries to connect to server and generates a random int; *
@@ -64,382 +49,515 @@ int request_to_server(int sockfd,Header* x,struct sockaddr_in* addr)
      * timeout is increased; if no response for 3 times, process      *
      * returns.                                                       *
      ******************************************************************/
+int request_to_server(int sockfd,segmentPacket* x,struct sockaddr_in* addr, char* command){
 
+    int n;
+    struct sockaddr_in s = *addr;
+	printf("Let me print the port to which I am sending %d\n", ntohs(s.sin_port));
+    struct timespec conn_time = {2,0};
+    int attempts = 0;
+    socklen_t len = sizeof(s);
+    x->seq_no = generate_casual();
+    strcpy(x->data,command);
+    //printf("Stampo il comando %s\n", x->data);
 
     for(;;){
+
     	if(sendto(sockfd, x,sizeof(Header), 0, (struct sockaddr *)&s,sizeof(s)) < 0){
-    		printf("errore\n");
-    		err_exit("sendto\n");
+
+    		error("sendto\n");
+
     	}
 
-    	if(setsockopt (sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&conn_time,sizeof(conn_time)) < 0)
-    		err_exit("setsockopt failed\n");
+    	if(setsockopt (sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&conn_time,sizeof(conn_time)) < 0){
+
+    		error("setsockopt failed\n");
+
+    	}
+
     	n = recvfrom(sockfd,x,sizeof(Header),0,(struct sockaddr*)&s,&len);
 
     	if(n < 0){
+
     		if(errno == EWOULDBLOCK){
+
     			printf("server not responding; trying again..\n");
     			++attempts;
-    			if(attempts == 3)
+    			if(attempts == 3){
+
     				break;
+
+    			}
+
     			conn_time.tv_sec += conn_time.tv_sec;
+
+    		}else{
+
+    			error("recvfrom");
+
     		}
-    		else
-    			err_exit("recvfrom");
+
     	}
+
     	if(n>0){
+
     		conn_time.tv_sec = 0;
     		conn_time.tv_nsec = 0;
-        	if(setsockopt (sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&conn_time,sizeof(conn_time)) < 0)
-        		err_exit("setsockopt failed\n");
+        	if(setsockopt (sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&conn_time,sizeof(conn_time)) < 0){
+
+        		error("setsockopt failed\n");
+
+        	}
+
     		printf("client connected!\n");
     	    *addr = s;
     	    return 1;
+
     	}
+
     }
 
     return 0;					/*not available server*/
 }
 
 
+/*Send the desired file to the server after the command put*/
+void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 
+	printf("Sono dentro a send_file_server\n");
 
+	char* filename = comm + 4;
 
+	int retCheck = check_existence(filename);
+	if(retCheck == 0){
 
-void print_list(Window* w, off_t len,int*tot_write)
-{
-	int n_bytes = get_n_bytes(len,*tot_write);
-	printf("\n%s",w->win[w->S].data);
-	*tot_write = *tot_write + n_bytes;
+		error("File is not present in the directory of the client\n");
 
-}
-
-
-
-
-void get_file_client(int sockfd,char* line, Header p, struct sockaddr_in servaddr)
-{
-	int fd = -1, win_ind, i=0, first_seq=p.n_ack;
-	Header h_recv,h_send;
-	off_t len;
-
-	if(strncmp(line,"get",3) == 0){
-		fd = create_file(line+4,"./clientDir/");
-		if(fd == -1){
-			printf("file already exists in your directory\n");
-			return;
-		}
 	}
 
-	Window* w = NULL;
-	initialize_window(&w,'r');
+	//opening file to send
+	int fd = open(filename, O_RDONLY);
+	if(fd < 0){
 
-	i = 1;
-	++first_seq;
+		error("Error while opening file\n");
 
-	insert_in_window(w,line,first_seq,strlen(line));
-	h_send = w->win[w->E];
-	send_packet(sockfd, servaddr, &(w->win[w->E]), COMMAND_LOSS);
-	w->E = (w->E + 1)%(n_win);
-
-	++i;
-
-	if(!receive_ack(w,sockfd,servaddr,&h_recv,first_seq,'s',0)){
-		printf("Server not responding; cannot start operation\n");
-		return;
 	}
 
-	int tmp = h_recv.n_ack;
-	increase_receive_win(w);
-	send_ack(sockfd,h_send,servaddr,COMMAND_LOSS,tmp);			/*send ack*/
+	/*acquiring stats of the file*/
+	struct stat st;
+	int count = stat(filename, &st);
+	if(count < 0){
 
+		error("Error while acquiring stats of file\n");
 
-	if(!receive_ack(w,sockfd,servaddr,&h_recv,tmp+1,'r',0)){
-		printf("Cannot receive size file from server; exiting\n");
 	}
 
+	/*getting file size*/
+	int sz = st.st_size;
 
-	w->win[w->S] = h_recv;
-	increase_receive_win(w);
-	printf("   size file = %s byte\n",h_recv.data);
+	int tries = 0;
 
-	send_ack(sockfd,h_send,servaddr,COMMAND_LOSS,h_send.n_ack+1);			/*send len ack*/
+	int numberOfSegments = sz / CHUNCKSIZE;
 
-	if(h_recv.data[0] == '\0'){
-		printf("not existing file in server directory\n");
-		return;
-	}
-	len = conv_in_off_t(h_recv.data);
+	/*if there are leftovers*/
+	if(sz % CHUNCKSIZE > 0){
 
-	int expected_ack = h_recv.n_seq + 1;
-	int tot_read = 0,tot_write = 0;
-	int n_pkt;
+		numberOfSegments++;
 
-	if(strncmp(line,"list",4) == 0)
-		printf("\n\n\n");				/*only to clearly show file to user*/
-
-	for(;;){
-		if(strncmp(line,"get",3) == 0)
-			printf("\rexecuting download");
-
-		if(tot_write == len)						/*received all packets*/
-			break;
-
-		if(!receive_packet(sockfd, &p,&servaddr)){
-			return;
-		}
-
-		n_pkt = (p.n_seq - first_seq -2);
-		win_ind = (p.n_seq-first_seq)%n_win;
-		w->win[win_ind].n_seq = p.n_seq;
-
-
-		if(p.n_seq<expected_ack || w->win[win_ind].flag == 0){
-
-			send_ack(sockfd,p,servaddr,PACKET_LOSS,p.n_seq);			/*lost ack; resend*/
-			continue;
-		}
-
-		buffering_packet(w,win_ind,len,MAXLINE*n_pkt,p,&tot_read);
-
-		while(w->win[w->S].flag == 0){
-			if(strncmp(line,"list",4) == 0)
-				print_list(w,len,&tot_write);
-
-			else
-				save_packet(w,fd,len,&tot_write);
-
-			++expected_ack;
-			increase_receive_win(w);
-		}
-		send_ack(sockfd,p,servaddr,PACKET_LOSS,p.n_seq);		/*send ack for packet*/
-
-		++i;
 	}
 
-	if(!waiting(sockfd,servaddr,p,expected_ack))
-		printf("Complete download, but server busy\n");
+	/*setting window parameter*/
+	int base = -1;	//highest segment ACK received
+	int seqNum = 0;	//highest segment sent, reset by base
+	int dataLenght = 0;	//CHUNCKSIZE size
+	int windowSize = WINDOWSIZE;
+	unsigned int fromSize;
 
-	else
-		printf("Complete download!\n");
+	int noTearDownAck = 1;
 
-	if(fd == -1)
-		return;
+	while(noTearDownAck){
 
-	if(close(fd) == -1)
-		err_exit("close file");
+		/*send packets from base up to window size*/
+		while(seqNum <= numberOfSegments && (seqNum - base) <= windowSize){
 
-	free(w->win);
-	free(w);
-}
+			struct segmentPacket dataPacket;
 
+			if(seqNum == numberOfSegments){
 
+				dataPacket = createFinalPacket(seqNum, 0);
+				printf("Sending final packet\n");
 
+			}else{
 
+				char data[CHUNCKSIZE];
+				memset(data, 0, CHUNCKSIZE + 1);
+				int retRead = read(fd, data, CHUNCKSIZE);
+				if(retRead < 0){
 
+					error("Error while reading from file\n");
 
+				}
 
+				dataLenght = retRead;
 
-void send_file_client(int sockfd,char* line, Header p, struct sockaddr_in servaddr)
-{
-	struct thread_data td;
-	int next_ack,n_ack_received = 0,win_ind,end_seq = 0,first_seq=p.n_ack;
-	int n_packets,fd,tot_read = 0;						/*to avoid warning*/
-	int i = 1;
-	char* filename = line + 4;
-	struct timespec arrived;
-	off_t len = 0;
-	Header recv;
+				printf("Stampo quello che ho letto dal file: \n%s\n", data);
 
-	Window* w = NULL;
-	initialize_window(&w,'s');
+				dataPacket = createDataPacket(seqNum, dataLenght, data);
+				printf("Sending packet: %d\n", seqNum);
 
-	insert_in_window(w,line,first_seq+i,strlen(line));
-	send_packet(sockfd,servaddr,&(w->win[w->E]),COMMAND_LOSS);
-	w->E = (w->E + 1)%(n_win + 1);
-
-
-	if(!receive_ack(w,sockfd,servaddr,&recv,first_seq+i,'s',0)){
-		printf("not responding server; cannot start operation\n");
-		return;
-	}
-
-	w->win[w->S].flag = 2;
-	increase_window(w);
-
-	if(recv.data[0] == '.'){
-		printf("File already exists in server directory\n");
-		p.data[0] = '.';
-	}
-
-
-	else
-		write_file_len(&len,&fd,&p,filename,"./clientDir/");
-
-	++i;
-
-	insert_in_window(w,p.data,first_seq + i,strlen(p.data));
-	send_packet(sockfd,servaddr,&(w->win[w->E]),COMMAND_LOSS);		/*send file len*/
-	w->E = (w->E + 1)%(n_win + 1);
-
-
-	if(recv.data[0] == '.')					/*not existing file*/
-		return;
-
-
-	if(!receive_ack(w,sockfd,servaddr,&recv,first_seq + i,'s',0)){
-		printf("not responding server; end operation\n");
-		return;
-	}
-
-
-	w->win[w->S].flag = 2;
-	increase_window(w);
-
-	n_packets = get_n_packets(len);
-	for(i = 0; i < n_win; i++){
-		read_and_insert(w,len,&tot_read,fd,first_seq + i + 3);
-		send_packet(sockfd,servaddr,&(w->win[w->E]),PACKET_LOSS);
-		end_seq = w->win[w->E].n_seq + 1;
-		w->E = (w->E + 1)%(n_win+1);
-		if(tot_read >= len)
-			break;
-	}
-
-
-	start_thread(td,servaddr,sockfd,w);
-
-	next_ack = w->win[w->S].n_seq;
-
-	printf("sending file...\n");
-
-
-	for(;;){
-		if(n_ack_received == n_packets)
-			break;
-
-		if(!receive_packet(sockfd, &p,&servaddr)){
-			if(tot_read == len)
-				printf("sended all file but received no response; operation could not be completed\n");
-
-			else
-				printf("received no response; cannot complete operation..\n");
-			return;
-		}
-
-		win_ind = (p.n_ack-first_seq - 1)%(n_win + 1);
-
-
-		if(p.n_ack<next_ack || (w->win[win_ind].flag == 2))
-			continue;
-
-		mutex_lock(&w->mtx);
-		w->win[win_ind].flag = 2;				/*received ack*/
-		mutex_unlock(&w->mtx);
-
-
-		if(adaptive == 1){
-			start_timer(&arrived);
-			calculate_timeout(arrived,w->win[win_ind].tstart);
-		}
-
-		next_ack = next_ack + increase_window(w);
-		++n_ack_received;
-
-		if(tot_read>=len){
-
-			continue;
-		}
-
-		int nE = (w->E + 1)%(n_win + 1);
-
-
-		while(nE != w->S){							/*window not full*/
-			read_and_insert(w,len,&tot_read,fd,first_seq + i + 3);
-			send_packet(sockfd,servaddr,&(w->win[w->E]),PACKET_LOSS);
-
-			if(tot_read == len){
-				end_seq = w->win[w->E].n_seq + 1;
 			}
-			w->E = nE;
-			nE = (nE + 1)%(n_win + 1);
 
-			++i;
+			char bufferToSend[sizeof(struct segmentPacket)];
+			memcpy(bufferToSend, &dataPacket, sizeof(struct segmentPacket));
 
-			if(tot_read == len){
-				break;
+			if(sendto(sockfd, bufferToSend, sizeof(bufferToSend), 0, (struct sockaddr *)&servaddr, sizeof(servaddr))<0){
+
+				error("Error while sending packet\n");
+
 			}
-		}			/*end while*/
-	}		/*end for*/
 
-	p.n_seq = end_seq;
-	w->end = 1;
+			seqNum++;
 
+		}
 
-	if(!wait_ack(sockfd,servaddr,p,end_seq)){
-		printf("Complete operation, but server busy\n");
-		return;
+		alarm(TIMEOUT);
+
+		int respStringlen;
+
+		printf("Window full: waiting for acks\n");
+
+		struct ACKPacket ack;
+
+		while((respStringlen = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr*)&servaddr, &fromSize)) < 0){
+
+			if(errno == EINTR){
+
+				seqNum = base + 1;
+
+				printf("Timeout: resending\n");
+
+				if(tries >= 10){
+
+					printf("Tries exceeded: Closing\n");
+					exit(1);
+
+				}else{
+
+					alarm(0);
+
+					while(seqNum <= numberOfSegments &&(seqNum - base) <= windowSize){
+
+						struct segmentPacket dataPacket;
+
+						if(seqNum == numberOfSegments){
+
+							dataPacket = createFinalPacket(seqNum, 0);
+							printf("Sending final packet");
+
+						}else{
+
+							char data[CHUNCKSIZE];
+							int retRead = read(fd, data, CHUNCKSIZE);
+							if(retRead < 0){
+
+								error("Error while reading from file\n");
+
+							}
+
+							dataLenght = retRead;
+
+							dataPacket = createDataPacket(seqNum, dataLenght, data);
+							printf("Sending packet: %d\n", seqNum);
+
+						}
+
+						char bufferToSend[sizeof(struct segmentPacket)];
+						memcpy(bufferToSend, &dataPacket, sizeof(struct segmentPacket));
+
+						if(sendto(sockfd, bufferToSend, sizeof(bufferToSend), 0, (struct sockaddr *)&servaddr, sizeof(servaddr))<0){
+
+							error("Error while sending to socket\n");
+
+						}
+
+						seqNum++;
+
+					}
+
+					alarm(TIMEOUT);
+
+				}
+
+				tries++;
+
+			}else{
+
+				error("Error while recvrom\n");
+
+			}
+
+		}
+
+		if(ack.type != 8){
+
+			printf("Received ack: %d\n", ack.ack_no);
+			if(ack.ack_no > base){
+
+				base = ack.ack_no;
+
+			}
+
+		}else{
+
+			printf("Received terminal ack\n");
+			noTearDownAck = 0;
+
+		}
+
+		alarm(0);
+		tries = 0;
+
 	}
 
-	free(w->win);
-	free(w);
+	printf("File sent correctly\n");
 
-	printf("Complete operation!\n");
+	close(sockfd);
+	exit(0);
 
 }
 
+/*Recieve the file from the server*/
+void get_file_client(int sockfd, char* comm, struct sockaddr_in servaddr, float loss_rate){
 
 
+	char *filename = "trasmesso.txt";
+	//char *filename = comm+4;
 
+  	/*check if the file is already in the client directory*/
+	/*int retCheck = check_existence(filename);	
+	if(retCheck == 1){
 
+    	error("File already in the directory\n");
 
+  	}*/
 
+  	printf("File does not exists, continuing\n");
+
+  	int fd;
+
+	char data[8192];
+	int base = -2;
+	int seqNum = 0;
+
+	srand48(2345);
+
+	while(1){
+
+		unsigned int length;
+
+		segmentPacket dataPacket;
+		ACKPacket ack;
+
+		char bufferToRecieve[sizeof(struct segmentPacket)];
+
+		int n = recvfrom(sockfd, &dataPacket, sizeof(dataPacket), 0, (struct sockaddr *)&servaddr, &length);
+		if(n < 0){
+
+    		error("Error while receiving from\n");
+
+  		}  
+
+  		memcpy(bufferToRecieve, &dataPacket, sizeof(segmentPacket));
+
+		seqNum = dataPacket.seq_no;
+
+		if(!is_lost(loss_rate)){
+
+			printf("Qua ci arrivooooo\n");
+
+    		if((dataPacket.seq_no == 0) && (dataPacket.type == 1)){
+
+    			printf("Qua pure\n");
+
+    			printf("Stampo quello che ho ricevuto\n%s\n", dataPacket.data);
+
+    			fd = open(filename, O_CREAT|O_WRONLY|O_TRUNC, 0666);
+    			if(fd < 0){
+
+    				error("Error while opening file\n");
+
+    			}
+
+      			memset(data, 0, sizeof(data));
+      			strcpy(data, dataPacket.data);
+
+      			int n = write(fd, data, CHUNCKSIZE);
+      			if(n < 0){
+
+      				error("Error while writing into file\n");
+
+      			}
+
+      			close(fd);
+
+      			base = 0;
+      			ack = createACKPacket(2, base);
+
+    		}else if(dataPacket.seq_no == base + 1){
+
+    			fd = open(filename, O_WRONLY|O_APPEND, 0666);
+    			if(fd < 0){
+
+    				error("Error while opening file\n");
+
+    			}
+
+    			printf("Stampo quello che ho ricevuto\n%s\n", dataPacket.data);
+
+      			printf("Received subsequent packet %d\n", dataPacket.seq_no);
+      			strcpy(data, dataPacket.data);
+
+      			printf("PRINTO UNA COSA: %d\n", dataPacket.length);
+
+      			int n = write(fd, data, dataPacket.length);
+
+      			if(n < 0){
+
+      				error("Error while writing into file\n");
+
+      			}
+
+      			memset(data, 0, CHUNCKSIZE);
+      			base = dataPacket.seq_no;
+      			ack = createACKPacket(2, base);
+
+    		}else if(dataPacket.type == 1 &&dataPacket.seq_no != base + 1){
+
+      			printf("Received out of sinc packet %d\n", dataPacket.seq_no);
+      			ack = createACKPacket(2, base);
+
+    		}
+
+    		if(dataPacket.type == 4 && seqNum == base){
+
+    			base = -1;
+    			ack = createACKPacket(8, base);
+
+    		}
+
+    		if(base >= 0){
+
+    			printf("Sending ack %d\n", base);
+    			if(sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr*)&servaddr, sizeof(servaddr))<0){
+
+        			error("Error while sending to socket\n");
+
+      			}
+
+    		}else if(base == -1){
+
+    			printf("Received TearDown Packet\n");
+    			printf("Sendint Terminal ACK\n");
+    			if(sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0){
+
+        			error("Error while sending to socket\n");
+
+      			}
+
+    		}
+
+    		if(dataPacket.type == 4 && base == -1){
+
+    			printf("Message received\n");
+    			close(fd);
+    			memset(data, 0, sizeof(data));
+
+    		}
+
+		}else{
+
+    		printf("Simulated lose\n");
+
+  		}
+
+	}
+
+}
+
+void recieve_list(int sockfd, struct sockaddr_in servaddr){
+
+	printf("Sono dentro recieve_list\n");
+
+	char bufferList[8192];
+
+	unsigned int length = sizeof(servaddr);
+
+	int n = recvfrom(sockfd, bufferList, sizeof(bufferList), 0, (struct sockaddr*)&servaddr, &length);
+	if(n < 0){
+
+		error("Error while recieving list\n");
+
+	}
+
+	printf("List of file in server directory:\n\n%s\n\n", bufferList);
+
+	return;
+
+}
 
 int main(int argc, char *argv[]) {
 
-  int   sockfd;
-  struct    sockaddr_in   servaddr;
-  Header p;
-  struct sigaction sa;
+	int   sockfd;
+	struct    sockaddr_in   servaddr;
+	segmentPacket p;
+	struct sigaction sa;
+	float loss; 
 
 
-  if(DIMWIN <= 0)
-	  n_win = 80;
-  if(DIMWIN > 93)
-	  n_win = 93;
-  else
-	  n_win = DIMWIN;
+	if(DIMWIN <= 0)
+		n_win = 80;
+	if(DIMWIN > 93)
+		n_win = 93;
+  	else
+	  	n_win = DIMWIN;
 
 
-  if(ADAPTATIVE != 1)
-	  adaptive = 0;
-  else
-	  adaptive = 1;
+  	if(ADAPTATIVE != 1)
+	  	adaptive = 0;
+ 	else
+	  	adaptive = 1;
 
-  handle_sigchild(&sa);
-
-
-  if (argc < 2) {
-    fprintf(stderr, "utilizzo: daytime_clientUDP <indirizzo IP  server>\n");
-    exit(1);
-  }
+  	handle_sigchild(&sa);
 
 
-  if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) { /* crea il socket   */
-	  err_exit("socket");
-   }
+  	if(argc < 3){
 
-   memset((void *)&servaddr, 0, sizeof(servaddr));
-   servaddr.sin_family = AF_INET;
-   servaddr.sin_port = htons(SERVPORT);
+    	fprintf(stderr, "utilizzo: daytime_clientUDP <indirizzo IP  server loss>\n");
+    	exit(1);
 
-   if (inet_pton(AF_INET, argv[1], &servaddr.sin_addr) <= 0) {
-        err_exit("error in inet_pton for %s");
-   }
+  	}
+
+  	loss = atof(argv[2]);
+
+  	if((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0){ /* crea il socket   */
+
+		error("socket");
+
+   	}
+
+	memset((void *)&servaddr, 0, sizeof(servaddr));
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_port = htons(SERVPORT);
+
+   	if(inet_pton(AF_INET, argv[1], &servaddr.sin_addr) <= 0){
+
+    	error("error in inet_pton for %s");
+
+   	}
 
 
-  pid_t pid;
-  char* line;
+	pid_t pid;
+	char* line;
 
   /*************************************************************
    * father process waits command from standard input; then,   *
@@ -447,68 +565,81 @@ int main(int argc, char *argv[]) {
    * waits all children; then, father terminates.               *
    *************************************************************/
 
+	while(feof(stdin) == 0){
 
+		char comm[5];
 
-  while(feof(stdin) == 0){
-	  //ssize_t len_line;
-	  char comm[5];
+		printf("write command\n");
+		line = read_from_stdin();
 
+		if(line == NULL){
 
-	  printf("write command\n");
-	  line = read_from_stdin();
+			wait(NULL);
+			printf("terminated all request; closing connection\n");
+			break;
 
-	  if(line == NULL){
-		  wait(NULL);
-		  printf("terminated all request; closing connection\n");
-		  break;
-	  }
+	  	}
 
-	  ++n_request;
-	  if(n_request > 5){
-		  printf("too many request; wait\n");
-		  continue;
-	  }
+		++n_request;
+		if(n_request > 5){
 
-	  pid = fork();
+			printf("too many request; wait\n");
+			continue;
 
-	  if(pid != 0)
-		  continue;
+	  	}
 
-	  if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) { /* create new socket   */
-		   err_exit("socket");
-	  }
+		pid = fork();
 
-	  if(!request_to_server(sockfd,&p,&servaddr)){
-		  printf("not available server\n");
-		  exit(EXIT_SUCCESS);
-	  }
+		if(pid != 0){
 
-	  strncpy(comm, line, 4);
-	  comm[strlen(comm)] = '\0';
+			continue;
 
-	  if(strncmp(comm, "put", 3) == 0){
-		  if(!existing_file(line+4,"./clientDir/")){
-			  printf("not existing file\n");
-			  break;
-		  }
-		  send_file_client(sockfd,line,p,servaddr);
-		  break;
-	  }
+		}
 
-	  else if((strncmp(comm,"get",3) == 0) || (strncmp(comm,"list",4) == 0)){
-		  get_file_client(sockfd,line,p,servaddr);
-		  break;
-	  }
+		if((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0){ /* create new socket   */
 
+			error("socket");
 
-	  else{
+		}
+
+		if(!request_to_server(sockfd,&p,&servaddr, line)){
+
+			printf("not available server\n");
+			exit(EXIT_SUCCESS);
+
+	  	}
+
+		strncpy(comm, line, 4);
+		comm[strlen(comm)] = '\0';
+
+		printf("Stampo comm%s\n", comm);
+
+		if(strncmp(comm, "put", 3) == 0){
+
+			send_file_client(sockfd,line,servaddr);
+			break;
+
+	  	}else if((strncmp(comm,"get",3) == 0)){
+
+			get_file_client(sockfd,line,servaddr, loss);
+			break;
+		  
+	  	}else if(strncmp(comm, "list", 4) == 0){
+
+	  		recieve_list(sockfd, servaddr);
+	  		break;
+
+	  	}else{
+
 	  		fprintf(stderr, "command not recognize. USE COMMAND  LIST or GET/PUT FOLLOWEWD BY A PROPER FILE NAME \n");
 	  		break;
-	  }
 
+	  	}
 
-      }
-      printf("closing connection\n");
+    }
 
-      exit(EXIT_SUCCESS);
+    printf("closing connection\n");
+
+    exit(EXIT_SUCCESS);
+
 }
