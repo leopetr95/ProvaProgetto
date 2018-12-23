@@ -260,6 +260,8 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 						}else{
 
 							char data[CHUNCKSIZE];
+							lseek(fd, seqNum * CHUNCKSIZE, SEEK_SET);
+							
 							int retRead = read(fd, data, CHUNCKSIZE);
 							if(retRead < 0){
 

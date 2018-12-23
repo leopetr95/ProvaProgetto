@@ -302,6 +302,9 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 						}else{
 
 							char data[CHUNCKSIZE];
+
+							lseek(fd, seqNum * CHUNCKSIZE, SEEK_SET);
+
 							int retRead = read(fd, data, CHUNCKSIZE);
 							if(retRead < 0){
 
