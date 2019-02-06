@@ -10,11 +10,13 @@
 #include <sys/socket.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 #include <string.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <signal.h>
 #include <sys/ipc.h>
+#include <sys/time.h>
 #include <sys/msg.h>
 #include <sys/shm.h>
 #include <sys/wait.h>

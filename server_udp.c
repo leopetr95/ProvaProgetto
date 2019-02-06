@@ -3,7 +3,7 @@
 #include "common.h"
 
 #define BUFFER_SIZE 1200
-#define WINDOWSIZE 4
+#define WINDOWSIZE 10
 #define TIMEOUT 3
 
 extern int n_win;
@@ -11,6 +11,10 @@ int adaptive;
 
 sem_t *sem;
 int *available_proc;
+
+void CatchAlarm(int ignored){    /* Handler for SIGALRM */
+    //printf("In Alarm\n");
+}
 
 /*Sets up signal handler to avoid zombi processes*/
 void sighandler(int sign){
@@ -160,7 +164,22 @@ char* list_file_server(){
 /*Send the requested file to the client after the command get*/
 void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
-	printf("Sono dentro a send_file_server\n");
+
+	struct timeval tv1;
+	double samplertt;
+
+	struct sigaction myAction;
+	myAction.sa_handler = CatchAlarm;
+	if (sigemptyset(&myAction.sa_mask) < 0){ /* block everything in handler */
+        error("sigfillset() failed");
+    }
+    myAction.sa_flags = 0;
+
+    if (sigaction(SIGALRM, &myAction, 0) < 0){
+        error("sigaction() failed for SIGALRM");
+    }
+
+	//printf("Sono dentro a send_file_server\n");
 
 	char directoryNameCat[256] = "Files_Server/";
 
@@ -208,6 +227,8 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
 	}
 
+	srand((unsigned int)time(NULL));
+
 	//setting window parameter
 	int base = -1;	//highest segment ACK received
 	int seqNum = 0;	//highest segment sent, reset by base
@@ -215,9 +236,41 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 	int windowSize = WINDOWSIZE;
 	unsigned int fromSize;
 
+	double x = 0.0;
+
 	int noTearDownAck = 1;
 
 	while(noTearDownAck){
+
+		double ESTIMATEDRTT = (0.875 * ESTIMATEDRTT) + (0.125 * samplertt);
+
+		printf("Stampo samplertt %f\n", samplertt);
+		printf("Stampo x %f\n", x);
+		//printf("stampo samplertt %f\n", samplertt);
+
+		//printf("STAMPO ESTIMATEDRTT %f\n", ESTIMATEDRTT);
+
+		double difference = samplertt -ESTIMATEDRTT;
+		double absDiff = fabs(difference);
+
+		double DevRTT = (0.75 * DevRTT) + (0.25 * absDiff);
+		//printf("STAMPO DevRTT %f\n", DevRTT);
+		double TimeoutInterval = ESTIMATEDRTT + (4 * DevRTT);
+
+		//printf("STAMPO IL TIMEOUT ADATTIVO %f\n", TimeoutInterval);
+
+		if(count % 2 == 0){
+
+			TimeoutInterval = 2 + samplertt + x;
+			printf("PRINTO 0: %f\n", TimeoutInterval);
+
+
+		}else{
+
+			TimeoutInterval = 2 + fabs(samplertt - x);
+			printf("PRINTO 1: %f\n", TimeoutInterval);
+
+		}
 
 		//send packets from base up to window size
 		while(seqNum <= numberOfSegments && (seqNum - base) <= windowSize){
@@ -244,7 +297,7 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
 				}
 
-				printf("Stampo quello che ho letto dal file: \n%s\n", data);
+				//printf("Stampo quello che ho letto dal file: \n%s\n", data);
 
 				dataPacket = createDataPacket(seqNum, dataLenght, data);
 				printf("Sending packet: %d\n", seqNum);
@@ -253,6 +306,9 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
 			char bufferToSend[sizeof(struct segmentPacket)];
 			memcpy(bufferToSend, &dataPacket, sizeof(struct segmentPacket));
+
+
+			gettimeofday(&tv1,NULL);
 
 			if(sendto(sockfd, bufferToSend, sizeof(bufferToSend), 0, (struct sockaddr *)&servaddr, sizeof(servaddr))<0){
 
@@ -265,7 +321,19 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
 		}
 
-		alarm(TIMEOUT);
+		if(count == 0){
+
+			alarm(TIMEOUT);
+			count++;
+
+		}else{
+
+			alarm(TimeoutInterval);
+
+
+		}
+
+		ualarm(TimeoutInterval*1000 +1000, 0);
 
 		int respStringlen;
 
@@ -274,6 +342,7 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 		struct ACKPacket ack;
 
 		while((respStringlen = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr*)&servaddr, &fromSize)) < 0){
+
 
 			if(errno == EINTR){
 
@@ -302,6 +371,8 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 						}else{
 
 							char data[CHUNCKSIZE];
+							char copy[CHUNCKSIZE];
+							bzero(data, strlen(data));
 
 							lseek(fd, seqNum * CHUNCKSIZE, SEEK_SET);
 
@@ -313,9 +384,12 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
 							}
 
+							strncpy(copy, data, CHUNCKSIZE);
+							copy[CHUNCKSIZE] = 0;
+
 							dataLenght = retRead;
 
-							dataPacket = createDataPacket(seqNum, dataLenght, data);
+							dataPacket = createDataPacket(seqNum, dataLenght, copy);
 							printf("Sending packet: %d\n", seqNum);
 
 						}
@@ -334,7 +408,7 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
 					}
 
-					alarm(TIMEOUT);
+					ualarm(TimeoutInterval *1000 +1000, 0);
 
 				}
 
@@ -354,6 +428,20 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 			printf("Received ack: %d\n", ack.ack_no);
 			if(ack.ack_no > base){
 
+
+				struct timeval tv2;
+				gettimeofday(&tv2, NULL);
+
+				x = ((float)rand()/(float)(RAND_MAX)*1.0);
+				printf("STAMPO X: %f\n", x); 
+
+				if(count == 1){
+
+					samplertt = (double) ((tv2.tv_usec - tv1.tv_usec))/1000;
+							count++;
+
+				}
+
 				base = ack.ack_no;
 
 			}
@@ -372,15 +460,18 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
 	printf("File sent correctly\n");
 
+	close(fd);
 	close(sockfd);
-	exit(0);
+	return;
 
 }
 
 /*Recieve the file from the client after the command put*/
 void get_file_server(int sockfd, char* comm, struct sockaddr_in servaddr, float loss_rate){
 
-	printf("Sono dentro get_file_server\n");
+	//printf("Sono dentro get_file_server\n");
+
+	//printf("STAMPO IL LOSS_RATE\n %f", loss_rate);
 
 	time_t intps;
 	struct tm* tmi;
@@ -432,8 +523,7 @@ void get_file_server(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 
   		}  
 
-  		printf("Printo quello che ho ricevuto %s\n", dataPacket.data);
-
+  		//printf("Printo quello che ho ricevuto \n%s\n", dataPacket.data);
 
   		memcpy(bufferToRecieve, &dataPacket, sizeof(segmentPacket));
 
@@ -511,7 +601,7 @@ void get_file_server(int sockfd, char* comm, struct sockaddr_in servaddr, float 
     			printf("Sending ack %d\n", base);
     			if(sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr*)&servaddr, sizeof(servaddr))<0){
 
-        			perror("Error while sending to socketto\n");
+        			perror("Error while sending to socket\n");
         			exit(1);
 
       			}
@@ -539,7 +629,7 @@ void get_file_server(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 
 		}else{
 
-    		printf("Simulated lose\n");
+    		printf("SIMULATED LOSE\n");
 
   		}
 
@@ -550,7 +640,7 @@ void get_file_server(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 /*According to the recieved command the corresponding function is activated*/
 void manage_client(int sockfd,struct msgbuf msg){
 
-	printf("Sono dentro manage_client\n");
+	//printf("Sono dentro manage_client\n");
 
 	/*The recieved string contains both the command and the file to be sent/put*/
     char comm[256];
@@ -560,9 +650,7 @@ void manage_client(int sockfd,struct msgbuf msg){
     /*Compare the first 3 char of the command with the string put*/
 	if(strncmp(comm, "put", 3) == 0){
 
-		//l'ultimo parametro è il loss rate, da impostare
-
-		printf("Sono nella put\n");
+		//printf("Sono nella put\n");
 		get_file_server(sockfd, comm, msg.s, msg.loss);
 
 	}
@@ -582,8 +670,9 @@ void manage_client(int sockfd,struct msgbuf msg){
 	/*Compare the first 3 char of the command with the string get*/
 	}else if((strncmp(comm,"get",3) == 0)){
 
-		printf("Sono nella get\n");
-		send_file_server(comm + 4, sockfd, msg.s);
+		//printf("Sono nella get\n");
+		send_file_server(comm + 4, sockfd, msg.s);  
+
 
 	}
 
@@ -598,7 +687,7 @@ void manage_client(int sockfd,struct msgbuf msg){
 
 void child_job(int queue_id,int shared_id,pid_t pid){
 
-	printf("I am in child job\n");
+	//printf("I am in child job\n");
 
 	(void)pid;
 	segmentPacket p;
@@ -754,7 +843,6 @@ int main(int argc, char **argv){
   		error("Errore nella shmat\n");
 
 	}
-
 
 	sem = sem_open("sem", O_CREAT | O_EXCL, 0666, 1);
 	if(sem == SEM_FAILED){

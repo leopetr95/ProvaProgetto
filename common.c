@@ -100,7 +100,8 @@ char* read_from_stdin(){
 
 		if(errno == EINTR){
 
-			printf("eintr\n");
+			printf
+			("eintr\n");
 
 		}
 

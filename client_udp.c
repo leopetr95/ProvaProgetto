@@ -3,14 +3,17 @@
 #include "common.h"
 
 #define BUFFER_SIZE 1200
-#define WINDOWSIZE 4
+#define WINDOWSIZE 10
 #define TIMEOUT 3
 
 int n_request = 0;
 extern int n_win;
 int adaptive;
 
-
+void CatchAlarm(int ignored)     /* Handler for SIGALRM */
+{
+    //printf("In Alarm\n");
+}
 
 /*Sets up signal handler to avoid zombi processes*/
 void sighandler(int sign){
@@ -52,7 +55,7 @@ int request_to_server(int sockfd,segmentPacket* x,struct sockaddr_in* addr, char
 
     int n;
     struct sockaddr_in s = *addr;
-	printf("Let me print the port to which I am sending %d\n", ntohs(s.sin_port));
+	//printf("Let me print the port to which I am sending %d\n", ntohs(s.sin_port));
     struct timespec conn_time = {2,0};
     int attempts = 0;
     socklen_t len = sizeof(s);
@@ -123,7 +126,22 @@ int request_to_server(int sockfd,segmentPacket* x,struct sockaddr_in* addr, char
 /*Send the desired file to the server after the command put*/
 void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 
-	printf("Sono dentro a send_file_server\n");
+	struct sigaction myAction;
+	myAction.sa_handler = CatchAlarm;
+	if (sigemptyset(&myAction.sa_mask) < 0){ /* block everything in handler */
+
+        error("sigfillset() failed");
+
+    }
+    myAction.sa_flags = 0;
+
+    if (sigaction(SIGALRM, &myAction, 0) < 0){
+
+        error("sigaction() failed for SIGALRM");
+
+    }
+
+	//printf("Sono dentro a send_file_server\n");
 
 	char directoryNameCat[256] = "Files_Client/";
 
@@ -180,6 +198,11 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 
 	while(noTearDownAck){
 
+		float ESTIMATEDRTT = (0.875 * ESTIMATEDRTT) + (0.125 * TIMEOUT);
+	float DevRTT = (1 - 0.25) * DevRTT + 0.25 * abs(TIMEOUT - ESTIMATEDRTT);
+
+	float TimeoutInterval = ESTIMATEDRTT + (4 * DevRTT);
+
 		/*send packets from base up to window size*/
 		while(seqNum <= numberOfSegments && (seqNum - base) <= windowSize){
 
@@ -193,7 +216,7 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 			}else{
 
 				char data[CHUNCKSIZE];
-				memset(data, 0, CHUNCKSIZE + 1);
+				memset(data, 0, CHUNCKSIZE+1);
 				int retRead = read(fd, data, CHUNCKSIZE);
 				if(retRead < 0){
 
@@ -203,7 +226,7 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 
 				dataLenght = retRead;
 
-				printf("Stampo quello che ho letto dal file: \n%s\n", data);
+				//printf("Stampo quello che ho letto dal file: \n%s\n", data);
 
 				dataPacket = createDataPacket(seqNum, dataLenght, data);
 				printf("Sending packet: %d\n", seqNum);
@@ -212,6 +235,7 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 
 			char bufferToSend[sizeof(struct segmentPacket)];
 			memcpy(bufferToSend, &dataPacket, sizeof(struct segmentPacket));
+
 
 			if(sendto(sockfd, bufferToSend, sizeof(bufferToSend), 0, (struct sockaddr *)&servaddr, sizeof(servaddr))<0){
 
@@ -223,7 +247,7 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 
 		}
 
-		alarm(TIMEOUT);
+		alarm(TimeoutInterval);
 
 		int respStringlen;
 
@@ -251,6 +275,7 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 					while(seqNum <= numberOfSegments &&(seqNum - base) <= windowSize){
 
 						struct segmentPacket dataPacket;
+						//printf("Stampo al dimensione di dataPacket %ld\n", sizeof(dataPacket));
 
 						if(seqNum == numberOfSegments){
 
@@ -260,6 +285,9 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 						}else{
 
 							char data[CHUNCKSIZE];
+							char copy[CHUNCKSIZE];
+							bzero(data, strlen(data));
+
 							lseek(fd, seqNum * CHUNCKSIZE, SEEK_SET);
 							
 							int retRead = read(fd, data, CHUNCKSIZE);
@@ -269,15 +297,24 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 
 							}
 
+							strncpy(copy, data, CHUNCKSIZE);
+							copy[CHUNCKSIZE] = 0;
+
+							//printf("STAMPO COPY \n%s\n", copy);
+
 							dataLenght = retRead;
 
-							dataPacket = createDataPacket(seqNum, dataLenght, data);
-							printf("Sending packet: %d\n", seqNum);
+							dataPacket = createDataPacket(seqNum, dataLenght, copy);
+
+							//printf("Sending packet: %d\n", seqNum);
 
 						}
 
+
 						char bufferToSend[sizeof(struct segmentPacket)];
+
 						memcpy(bufferToSend, &dataPacket, sizeof(struct segmentPacket));
+
 
 						if(sendto(sockfd, bufferToSend, sizeof(bufferToSend), 0, (struct sockaddr *)&servaddr, sizeof(servaddr))<0){
 
@@ -289,7 +326,7 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 
 					}
 
-					alarm(TIMEOUT);
+					alarm(TimeoutInterval);
 
 				}
 
@@ -297,7 +334,7 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 
 			}else{
 
-				error("Error while recvrom\n");
+				error("Error while recvfrom\n");
 
 			}
 
@@ -325,7 +362,7 @@ void send_file_client(int sockfd, char *comm, struct sockaddr_in servaddr){
 	}
 
 	printf("File sent correctly\n");
-
+	close(fd);
 	close(sockfd);
 	exit(0);
 
@@ -391,9 +428,8 @@ void get_file_client(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 
     		if((dataPacket.seq_no == 0) && (dataPacket.type == 1)){
 
-    			printf("Qua pure\n");
 
-    			printf("Stampo quello che ho ricevuto\n%s\n", dataPacket.data);
+    			//printf("Stampo quello che ho ricevuto\n%s\n", dataPacket.data);
 
     			fd = open(directoryNameCat, O_CREAT|O_WRONLY|O_TRUNC, 0666);
     			if(fd < 0){
@@ -426,12 +462,12 @@ void get_file_client(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 
     			}
 
-    			printf("Stampo quello che ho ricevuto\n%s\n", dataPacket.data);
+    			//printf("Stampo quello che ho ricevuto\n%s\n", dataPacket.data);
 
       			printf("Received subsequent packet %d\n", dataPacket.seq_no);
       			strcpy(data, dataPacket.data);
 
-      			printf("PRINTO UNA COSA: %d\n", dataPacket.length);
+      			//printf("PRINTO: %d\n", dataPacket.length);
 
       			int n = write(fd, data, dataPacket.length);
 
@@ -444,6 +480,8 @@ void get_file_client(int sockfd, char* comm, struct sockaddr_in servaddr, float 
       			memset(data, 0, CHUNCKSIZE);
       			base = dataPacket.seq_no;
       			ack = createACKPacket(2, base);
+
+      			close(fd);
 
     		}else if(dataPacket.type == 1 &&dataPacket.seq_no != base + 1){
 
@@ -485,6 +523,7 @@ void get_file_client(int sockfd, char* comm, struct sockaddr_in servaddr, float 
     			printf("Message received\n");
     			close(fd);
     			memset(data, 0, sizeof(data));
+    			break;
 
     		}
 
@@ -496,11 +535,11 @@ void get_file_client(int sockfd, char* comm, struct sockaddr_in servaddr, float 
 
 	}
 
+	printf("DUASIDUASIDAUIS\n");
+
 }
 
 void receive_list(int sockfd, struct sockaddr_in servaddr){
-
-	printf("Sono dentro receive_list\n");
 
 	char bufferList[8192];
 
@@ -612,7 +651,7 @@ int main(int argc, char *argv[]) {
 		strncpy(comm, line, 4);
 		comm[strlen(comm)] = '\0';
 
-		printf("Stampo comm%s\n", comm);
+		//printf("Stampo comm%s\n", comm);
 
 		if(strncmp(comm, "put", 3) == 0){
 
@@ -621,7 +660,14 @@ int main(int argc, char *argv[]) {
 
 	  	}else if((strncmp(comm,"get",3) == 0)){
 
+	  		struct timeval tv1, tv2;
+	  		gettimeofday(&tv1, NULL);
+
 			get_file_client(sockfd,line,servaddr, loss);
+
+			gettimeofday(&tv2, NULL);
+			printf ("Total time = %f seconds\n",(double) ((tv2.tv_usec - tv1.tv_usec) / 1000000) + (double) (tv2.tv_sec - tv1.tv_sec));
+
 			break;
 		  
 	  	}else if(strncmp(comm, "list", 4) == 0){
