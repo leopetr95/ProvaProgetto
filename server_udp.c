@@ -5,9 +5,21 @@
 #define BUFFER_SIZE 1200
 #define WINDOWSIZE 10
 #define TIMEOUT 3
+#define SEND_FILE_TIMEOUT 100000
+#define MIN_SEND_FILE_TIMEOUT 0.005
+#define ADAPTIVE_TIMEOUT 1
 
 extern int n_win;
-int adaptive;
+
+double estimatedrtt = 0.1;
+double devrtt = 0.0;
+double send_file_timeout = 0.1;
+double alfa = 0.125;
+double beta = 0.25;
+double tempo_iniziale = 0.0;
+double tempo_finale = 0.0;
+struct timeval t;
+
 
 sem_t *sem;
 int *available_proc;
@@ -45,6 +57,40 @@ void handle_sigchild(struct sigaction* sa){
     sem_unlink("sem");
 
 }
+
+void setTimeout(int sockfd, double time){
+
+	struct timeval timeout;
+	timeout.tv_sec = 0;
+	timeout.tv_usec = time;
+	setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+}
+
+void setAdaptiveTimeout(int sockfd, double time){
+
+	if(time < MIN_SEND_FILE_TIMEOUT){
+
+		time = MIN_SEND_FILE_TIMEOUT;
+
+	}
+
+	struct timeval timeout;
+	timeout.tv_sec = 0;
+	timeout.tv_usec = time*100000;
+	setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+}
+
+void get_adaptive_timeout(double initial, double final){
+
+	double samplertt = (final - initial);
+	estimatedrtt = ((1-alfa)*estimatedrtt) + (alfa * (samplertt));
+	devrtt = ((1 - beta) * (devrtt + beta)) * (fabs(((samplertt) - estimatedrtt)));
+	send_file_timeout = estimatedrtt + (4*(devrtt));
+
+}
+
 
 /*Initializes socket*/
 void initialize_socket(int* sock_fd,struct sockaddr_in* s){
@@ -164,10 +210,6 @@ char* list_file_server(){
 /*Send the requested file to the client after the command get*/
 void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
-
-	struct timeval tv1;
-	double samplertt;
-
 	struct sigaction myAction;
 	myAction.sa_handler = CatchAlarm;
 	if (sigemptyset(&myAction.sa_mask) < 0){ /* block everything in handler */
@@ -227,8 +269,6 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
 	}
 
-	srand((unsigned int)time(NULL));
-
 	//setting window parameter
 	int base = -1;	//highest segment ACK received
 	int seqNum = 0;	//highest segment sent, reset by base
@@ -236,41 +276,10 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 	int windowSize = WINDOWSIZE;
 	unsigned int fromSize;
 
-	double x = 0.0;
 
 	int noTearDownAck = 1;
 
 	while(noTearDownAck){
-
-		double ESTIMATEDRTT = (0.875 * ESTIMATEDRTT) + (0.125 * samplertt);
-
-		printf("Stampo samplertt %f\n", samplertt);
-		printf("Stampo x %f\n", x);
-		//printf("stampo samplertt %f\n", samplertt);
-
-		//printf("STAMPO ESTIMATEDRTT %f\n", ESTIMATEDRTT);
-
-		double difference = samplertt -ESTIMATEDRTT;
-		double absDiff = fabs(difference);
-
-		double DevRTT = (0.75 * DevRTT) + (0.25 * absDiff);
-		//printf("STAMPO DevRTT %f\n", DevRTT);
-		double TimeoutInterval = ESTIMATEDRTT + (4 * DevRTT);
-
-		//printf("STAMPO IL TIMEOUT ADATTIVO %f\n", TimeoutInterval);
-
-		if(count % 2 == 0){
-
-			TimeoutInterval = 2 + samplertt + x;
-			printf("PRINTO 0: %f\n", TimeoutInterval);
-
-
-		}else{
-
-			TimeoutInterval = 2 + fabs(samplertt - x);
-			printf("PRINTO 1: %f\n", TimeoutInterval);
-
-		}
 
 		//send packets from base up to window size
 		while(seqNum <= numberOfSegments && (seqNum - base) <= windowSize){
@@ -307,8 +316,24 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 			char bufferToSend[sizeof(struct segmentPacket)];
 			memcpy(bufferToSend, &dataPacket, sizeof(struct segmentPacket));
 
+			/*if(ADAPTIVE_TIMEOUT){
 
-			gettimeofday(&tv1,NULL);
+				setAdaptiveTimeout(sockfd, send_file_timeout);
+				int ret = gettimeofday(&t, NULL);
+				if(ret == -1){
+
+					error("Error while getting time of day\n");
+
+				}
+
+				tempo_iniziale = t.tv_sec + (t.tv_usec /1000000.0);
+
+
+			}else{
+
+				setTimeout(sockfd, SEND_FILE_TIMEOUT);
+
+			}*/
 
 			if(sendto(sockfd, bufferToSend, sizeof(bufferToSend), 0, (struct sockaddr *)&servaddr, sizeof(servaddr))<0){
 
@@ -321,19 +346,8 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
 		}
 
-		if(count == 0){
 
-			alarm(TIMEOUT);
-			count++;
-
-		}else{
-
-			alarm(TimeoutInterval);
-
-
-		}
-
-		ualarm(TimeoutInterval*1000 +1000, 0);
+		alarm(TIMEOUT);
 
 		int respStringlen;
 
@@ -342,7 +356,6 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 		struct ACKPacket ack;
 
 		while((respStringlen = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr*)&servaddr, &fromSize)) < 0){
-
 
 			if(errno == EINTR){
 
@@ -397,6 +410,26 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 						char bufferToSend[sizeof(struct segmentPacket)];
 						memcpy(bufferToSend, &dataPacket, sizeof(struct segmentPacket));
 
+
+						/*if(ADAPTIVE_TIMEOUT){
+
+							setAdaptiveTimeout(sockfd, send_file_timeout);
+
+							int ret = gettimeofday(&t, NULL);
+							if(ret == -1){
+
+								error("Errore nella gettimeofday 1 nella send_packet del server.");
+
+							}
+
+							tempo_iniziale = t.tv_sec + (t.tv_usec/1000000.0);
+
+						}else{
+
+							setTimeout(sockfd, SEND_FILE_TIMEOUT);
+
+						}*/
+
 						if(sendto(sockfd, bufferToSend, sizeof(bufferToSend), 0, (struct sockaddr *)&servaddr, sizeof(servaddr))<0){
 
 							perror("Error while sending to socket\n");
@@ -408,7 +441,7 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 
 					}
 
-					ualarm(TimeoutInterval *1000 +1000, 0);
+					alarm(TIMEOUT);
 
 				}
 
@@ -428,20 +461,16 @@ void send_file_server(char *filename, int sockfd, struct sockaddr_in servaddr){
 			printf("Received ack: %d\n", ack.ack_no);
 			if(ack.ack_no > base){
 
+				/*int ret = gettimeofday(&t, NULL);
+				if(ret == -1){
 
-				struct timeval tv2;
-				gettimeofday(&tv2, NULL);
-
-				x = ((float)rand()/(float)(RAND_MAX)*1.0);
-				printf("STAMPO X: %f\n", x); 
-
-				if(count == 1){
-
-					samplertt = (double) ((tv2.tv_usec - tv1.tv_usec))/1000;
-							count++;
+					error("Error while getting time of day 2\n");
 
 				}
 
+				tempo_finale = t.tv_sec + (t.tv_usec/1000000.0);
+				get_adaptive_timeout(tempo_iniziale, tempo_finale);
+*/
 				base = ack.ack_no;
 
 			}
